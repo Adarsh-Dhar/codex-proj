@@ -27,6 +27,10 @@ use <all_urls>, *://*/*, http://*/*, or https://*/*. If the feature would need
 site access but no site is named, use activeTab after a user gesture or explain
 the limitation in the UI. Return JSON only, with no Markdown code fences.
 
+When a third-party package is essential, use a version-pinned bare npm import
+such as "nanoid@5.1.5". Do not use a URL import; the compiler vendors approved
+bare imports locally before bundling.
+
 The source protocol accepts text files only. Do not declare PNG/JPEG icons. You
 may omit icons or use a locally generated SVG file when an icon is necessary.
 `.trim();

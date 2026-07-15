@@ -11,7 +11,7 @@
     "start": "node --env-file=.env chatbot.js",
     "compile": "node --env-file=.env index.js",
     "manifest": "node --env-file=.env index.js",
-    "lint": "node --check index.js && node --check chatbot.js && node --check ai-orchestrator.js && node --check validator.js && node --check mutator.js && node --check packager.js"
+    "lint": "node --check index.js && node --check chatbot.js && node --check ai-orchestrator.js && node --check validator.js && node --check permission-optimizer.js && node --check mutator.js && node --check vendor-ingestor.js && node --check packager.js"
   },
   "dependencies": {
     "@babel/core": "^7.27.0",

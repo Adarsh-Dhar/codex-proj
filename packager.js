@@ -41,7 +41,7 @@ async function writeSourceTree(files, sourceRoot) {
 
 async function buildBundle(sourceRoot, bundleRoot, files) {
   await cp(sourceRoot, bundleRoot, { recursive: true });
-  for (const filename of Object.keys(files).filter((name) => name.endsWith(".js"))) {
+  for (const filename of Object.keys(files).filter((name) => name.endsWith(".js") && !name.startsWith("vendor/"))) {
     const source = join(sourceRoot, filename);
     const output = join(bundleRoot, filename);
     await mkdir(dirname(output), { recursive: true });
@@ -57,6 +57,9 @@ async function buildBundle(sourceRoot, bundleRoot, files) {
       logLevel: "silent"
     });
   }
+  // Vendor modules are compiler inputs. esbuild folds them into their local
+  // consumers, so retaining them would duplicate code in the final archive.
+  await rm(join(bundleRoot, "vendor"), { recursive: true, force: true });
 }
 
 async function createZip(directory) {

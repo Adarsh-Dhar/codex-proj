@@ -37,6 +37,13 @@ export function validateManifest(manifest) {
     }
   }
 
+  for (const script of manifest.content_scripts ?? []) {
+    validateMatchPatterns(script?.matches, "content_scripts.matches", violations);
+  }
+  for (const resource of manifest.web_accessible_resources ?? []) {
+    validateMatchPatterns(resource?.matches, "web_accessible_resources.matches", violations);
+  }
+
   if (manifest.declarative_net_request && !manifest.permissions?.includes("declarativeNetRequest")) {
     violations.push(manifestViolation("dnr-permission", "declarative_net_request requires the declarativeNetRequest permission."));
   }
@@ -162,6 +169,35 @@ export function validateExtension(extension) {
   return deduplicateViolations(violations);
 }
 
+/**
+ * Collects unique, version-pinned bare npm imports across every generated JS
+ * source file. Local, absolute, and remote specifiers are excluded here and
+ * handled by the normal validator rules instead.
+ */
+export function collectExternalDependencies(extension) {
+  if (!extension || typeof extension !== "object" || !extension.files) {
+    throw new TypeError("Generated extension must contain a files object.");
+  }
+
+  const dependencies = new Map();
+  for (const [filename, source] of Object.entries(extension.files)) {
+    if (!filename.endsWith(".js") || typeof source !== "string") continue;
+    const ast = parse(source, { sourceType: "unambiguous", plugins: ["jsx", "typescript"] });
+    traverse(ast, {
+      ImportDeclaration(path) {
+        addDependency(path.node.source.value, filename, dependencies);
+      },
+      ExportNamedDeclaration(path) {
+        if (path.node.source) addDependency(path.node.source.value, filename, dependencies);
+      },
+      ExportAllDeclaration(path) {
+        addDependency(path.node.source.value, filename, dependencies);
+      }
+    });
+  }
+  return [...dependencies.values()];
+}
+
 function validateManifestReferences(manifest, files) {
   const requiredFiles = [];
   if (manifest.background?.service_worker) requiredFiles.push(manifest.background.service_worker);
@@ -244,8 +280,36 @@ function isRemoteUrl(value) {
   return /^https?:\/\//i.test(value);
 }
 
+function addDependency(specifier, filename, dependencies) {
+  if (!isBarePackageSpecifier(specifier)) return;
+  const entry = dependencies.get(specifier) ?? { specifier, importedBy: [] };
+  if (!entry.importedBy.includes(filename)) entry.importedBy.push(filename);
+  dependencies.set(specifier, entry);
+}
+
+function isBarePackageSpecifier(specifier) {
+  return typeof specifier === "string" &&
+    !specifier.startsWith(".") &&
+    !specifier.startsWith("/") &&
+    !specifier.startsWith("node:") &&
+    !isRemoteUrl(specifier);
+}
+
 function isForbiddenHost(host) {
   return FORBIDDEN_HOST_PATTERNS.has(host) || /^(?:\*|https?|file):\/\/\*\/\*$/i.test(host);
+}
+
+function validateMatchPatterns(patterns, field, violations) {
+  if (patterns === undefined) return;
+  if (!Array.isArray(patterns)) {
+    violations.push(manifestViolation(`${field}-type`, `${field} must be an array.`));
+    return;
+  }
+  for (const pattern of patterns) {
+    if (typeof pattern !== "string" || isForbiddenHost(pattern)) {
+      violations.push(manifestViolation("broad-match-pattern", `Disallowed match pattern in ${field}: ${String(pattern)}.`));
+    }
+  }
 }
 
 function manifestViolation(rule, message) {

@@ -1,0 +1,18 @@
+{
+  "action": {
+    "default_title": "Tab Notes"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "description": "Save a note for the currently active tab without requesting website access.",
+  "host_permissions": [],
+  "manifest_version": 3,
+  "name": "Tab Notes",
+  "permissions": [
+    "storage",
+    "activeTab"
+  ],
+  "version": "1.0.0"
+}

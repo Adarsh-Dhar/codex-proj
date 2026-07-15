@@ -1,0 +1,24 @@
+{
+  "name": "mv3-ai-extension-compiler",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A compliance-first pipeline for compiling AI-generated Chrome MV3 extensions using OpenAI or GitHub Models.",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "start": "node --env-file=.env chatbot.js",
+    "compile": "node --env-file=.env index.js",
+    "manifest": "node --env-file=.env index.js",
+    "lint": "node --check index.js && node --check chatbot.js && node --check ai-orchestrator.js && node --check validator.js && node --check mutator.js && node --check packager.js"
+  },
+  "dependencies": {
+    "@babel/core": "^7.27.0",
+    "@babel/parser": "^7.27.0",
+    "@babel/traverse": "^7.27.0",
+    "esbuild": "^0.25.0",
+    "jszip": "^3.10.1",
+    "openai": "^5.0.0"
+  }
+}

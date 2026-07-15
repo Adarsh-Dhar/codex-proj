@@ -1,32 +1,42 @@
-import { generateExtension, generateManifest } from "./ai-orchestrator.js";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { generateExtension, generateManifest, repairExtension } from "./ai-orchestrator.js";
+import { lintExtension } from "./linter.js";
 import { mutateExtension, rewriteExternalImports } from "./mutator.js";
 import { packageExtension } from "./packager.js";
 import { optimizeHostPermissions } from "./permission-optimizer.js";
-import { collectExternalDependencies, validateExtension } from "./validator.js";
+import { resolveScaffolds } from "./scaffolder.js";
+import { collectExternalDependencies, inspectScaffoldUsage, validateExtension } from "./validator.js";
 import { ingestDependencies } from "./vendor-ingestor.js";
 
-/** Runs generation, validation, mutation, revalidation, and packaging. */
+/** Runs generation, deterministic checks, one lint repair, vendoring, and packaging. */
 export async function compileExtension(description, options = {}) {
   if (typeof description !== "string" || !description.trim()) {
     throw new TypeError("A non-empty extension description is required.");
   }
 
   const generated = await generateExtension(description, options);
-  const initialViolations = validateExtension(generated);
-  const corrected = mutateExtension(generated, initialViolations);
-  const permissionOptimized = optimizeHostPermissions(corrected);
-  const postMutationViolations = [
-    ...validateExtension(permissionOptimized),
-    ...permissionOptimized.permissionViolations
-  ];
+  let extension = await resolveScaffolds(generated);
+  const mutations = [];
+  extension = applySecurityPipeline(extension, mutations);
 
-  throwIfViolations(postMutationViolations, corrected.mutations);
+  const initialLintViolations = await lintExtension(extension);
+  let lintRepair = { attempted: false, violations: 0 };
+  if (initialLintViolations.length > 0) {
+    const repaired = await repairExtension(description, extension, initialLintViolations, options);
+    const merged = mergeRepairedExtension(extension, repaired);
+    extension = await resolveScaffolds(merged, extension.requestedScaffolds);
+    extension = applySecurityPipeline(extension, mutations);
+    const remainingLintViolations = await lintExtension(extension);
+    throwIfViolations(remainingLintViolations, mutations);
+    lintRepair = { attempted: true, violations: initialLintViolations.length };
+  }
 
-  const dependencies = collectExternalDependencies(permissionOptimized);
-  const ingested = await ingestDependencies(permissionOptimized, dependencies, options);
-  const rewritten = rewriteExternalImports(ingested, ingested.vendorMap);
-  const finalViolations = validateExtension(rewritten);
-  const unresolvedDependencies = collectExternalDependencies(rewritten);
+  const dependencies = collectExternalDependencies(extension);
+  const ingested = await ingestDependencies(extension, dependencies, options);
+  extension = rewriteExternalImports(ingested, ingested.vendorMap);
+  const finalViolations = validateExtension(extension);
+  const unresolvedDependencies = collectExternalDependencies(extension);
   if (unresolvedDependencies.length > 0) {
     finalViolations.push(...unresolvedDependencies.map(({ specifier }) => ({
       rule: "unresolved-vendor-import",
@@ -37,18 +47,67 @@ export async function compileExtension(description, options = {}) {
       fixable: false
     })));
   }
-  throwIfViolations(finalViolations, corrected.mutations);
+  throwIfViolations(finalViolations, mutations);
+  throwIfViolations(await lintExtension(extension), mutations);
+  const scaffoldUsage = inspectScaffoldUsage(extension);
 
-  const packaged = await packageExtension(rewritten, options);
+  const packaged = await packageExtension(extension, {
+    ...options,
+    keepUnpacked: options.keepUnpacked || options.runE2E
+  });
+  const e2e = options.runE2E && packaged.unpackedPath
+    ? await runE2E(packaged.unpackedPath, options)
+    : null;
+
   return {
     archivePath: packaged.archivePath,
+    sourcePath: packaged.sourcePath,
+    unpackedPath: packaged.unpackedPath,
     files: packaged.files,
-    mutations: corrected.mutations,
-    permissionOptimization: permissionOptimized.permissionOptimization,
+    mutations,
+    permissionOptimization: extension.permissionOptimization,
+    lintRepair,
+    e2e,
     vendorDependencies: ingested.vendored,
-    vendorRewrites: rewritten.vendorRewrites,
-    manifest: JSON.parse(rewritten.files["manifest.json"])
+    vendorRewrites: extension.vendorRewrites,
+    scaffolds: extension.trustedScaffolds,
+    scaffoldUsage,
+    manifest: JSON.parse(extension.files["manifest.json"])
   };
+}
+
+function applySecurityPipeline(extension, mutations) {
+  const initialViolations = validateExtension(extension);
+  const mutated = mutateExtension(extension, initialViolations);
+  mutations.push(...mutated.mutations);
+  const permissionOptimized = optimizeHostPermissions(mutated);
+  throwIfViolations([
+    ...validateExtension(permissionOptimized),
+    ...permissionOptimized.permissionViolations
+  ], mutations);
+  return permissionOptimized;
+}
+
+function mergeRepairedExtension(original, repaired) {
+  const preservedFiles = Object.fromEntries(
+    Object.entries(original.files).filter(([filename]) => filename.startsWith("scaffold/"))
+  );
+  return {
+    ...original,
+    ...repaired,
+    description: original.description,
+    requestedScaffolds: original.requestedScaffolds,
+    files: { ...original.files, ...repaired.files, ...preservedFiles }
+  };
+}
+
+async function runE2E(unpackedPath, options) {
+  try {
+    const { testExtension } = await import("./e2e-tester.js");
+    return await testExtension(unpackedPath, { screenshotPath: options.screenshotPath });
+  } catch (error) {
+    return { status: "unavailable", message: error.message };
+  }
 }
 
 function throwIfViolations(violations, mutations) {
@@ -65,9 +124,19 @@ export async function createManifestFromPrompt(description, options = {}) {
   return generateManifest(description, options);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
-  const description = process.argv.slice(2).join(" ");
-  compileExtension(description)
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+  const args = process.argv.slice(2);
+  const runE2E = args.includes("--e2e");
+  const proof = args.includes("--proof");
+  const description = args.filter((argument) => argument !== "--e2e" && argument !== "--proof").join(" ");
+  compileExtension(description, {
+    runE2E,
+    keepUnpacked: runE2E || proof,
+    keepSource: proof,
+    sourceOutputPath: proof ? "dist/generated-extension-source" : undefined,
+    unpackedOutputPath: runE2E || proof ? "dist/unpacked-extension" : undefined,
+    screenshotPath: runE2E ? "dist/extension-preview.png" : undefined
+  })
     .then((result) => console.log(JSON.stringify(result, null, 2)))
     .catch((error) => {
       console.error(`Compilation failed: ${error.message}`);

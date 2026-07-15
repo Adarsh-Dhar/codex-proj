@@ -29,8 +29,32 @@ export function optimizeHostPermissions(extension) {
   const broadPermissions = Array.isArray(hostPermissions)
     ? hostPermissions.filter((permission) => BROAD_HOST_PERMISSIONS.has(permission))
     : [];
+
+  // Chrome host permissions are match patterns, not request URLs. Normalise a
+  // model-produced path such as https://api.example.com/status to the smallest
+  // valid permission covering that origin: https://api.example.com/*.
+  const normalizedExistingHosts = Array.isArray(hostPermissions)
+    ? hostPermissions.map(normalizeHostPermission)
+    : hostPermissions;
+  const normalizedChanged = Array.isArray(hostPermissions) &&
+    normalizedExistingHosts.some((host, index) => host !== hostPermissions[index]);
+
   if (broadPermissions.length === 0) {
-    return { ...extension, permissionOptimization: { changed: false, reason: "already-scoped" }, permissionViolations: [] };
+    if (!normalizedChanged) {
+      return { ...extension, permissionOptimization: { changed: false, reason: "already-scoped" }, permissionViolations: [] };
+    }
+    manifest.host_permissions = normalizedExistingHosts;
+    return {
+      ...extension,
+      files: { ...extension.files, "manifest.json": `${JSON.stringify(manifest, null, 2)}\n` },
+      permissionOptimization: {
+        changed: true,
+        removed: [],
+        hostPermissions: normalizedExistingHosts,
+        reason: "normalized-match-pattern"
+      },
+      permissionViolations: []
+    };
   }
 
   const { origins, dynamicTargets, parseErrors } = discoverNetworkOrigins(extension.files);
@@ -133,6 +157,13 @@ function chromeMatchPatternFor(value) {
   } catch {
     return null;
   }
+}
+
+function normalizeHostPermission(value) {
+  if (typeof value !== "string") return value;
+  const match = /^(\*|https?):\/\/([^/]+)(?:\/.*)?$/i.exec(value);
+  if (!match) return value;
+  return `${match[1].toLowerCase()}://${match[2]}/*`;
 }
 
 function isIdentifier(node, name) {

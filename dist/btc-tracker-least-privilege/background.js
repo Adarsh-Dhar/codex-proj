@@ -1,1 +1,0 @@
-(()=>{async function o(){let c=await(await fetch("https://api.coindesk.com/v1/bpi/currentprice.json")).json();console.log("BTC Price:",c.bpi.USD.rate)}chrome.alarms.create("fetchBtc",{periodInMinutes:5});chrome.alarms.onAlarm.addListener(e=>{e.name==="fetchBtc"&&o().catch(console.error)});})();

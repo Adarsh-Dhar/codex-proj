@@ -19,14 +19,35 @@ export async function packageExtension(extension, options = {}) {
 
   try {
     await writeSourceTree(extension.files, sourceRoot);
+    const sourcePath = await retainSourceTree(sourceRoot, options);
     await buildBundle(sourceRoot, bundleRoot, extension.files);
+    const unpackedPath = await retainUnpackedBundle(bundleRoot, options);
     await mkdir(dirname(outputPath), { recursive: true });
     const archive = await createZip(bundleRoot);
-    await writeFile(outputPath, archive);
-    return { archivePath: outputPath, files: Object.keys(extension.files).sort() };
+    await writeFile(outputPath, archive.buffer);
+    return { archivePath: outputPath, sourcePath, unpackedPath, files: archive.files };
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
+}
+
+/** Retains the exact pre-esbuild tree for an independently inspectable proof run. */
+async function retainSourceTree(sourceRoot, options) {
+  if (!options.keepSource) return null;
+  const sourcePath = resolve(options.sourceOutputPath ?? "dist/generated-extension-source");
+  await rm(sourcePath, { recursive: true, force: true });
+  await mkdir(dirname(sourcePath), { recursive: true });
+  await cp(sourceRoot, sourcePath, { recursive: true });
+  return sourcePath;
+}
+
+async function retainUnpackedBundle(bundleRoot, options) {
+  if (!options.keepUnpacked) return null;
+  const unpackedPath = resolve(options.unpackedOutputPath ?? "dist/unpacked-extension");
+  await rm(unpackedPath, { recursive: true, force: true });
+  await mkdir(dirname(unpackedPath), { recursive: true });
+  await cp(bundleRoot, unpackedPath, { recursive: true });
+  return unpackedPath;
 }
 
 async function writeSourceTree(files, sourceRoot) {
@@ -41,7 +62,9 @@ async function writeSourceTree(files, sourceRoot) {
 
 async function buildBundle(sourceRoot, bundleRoot, files) {
   await cp(sourceRoot, bundleRoot, { recursive: true });
-  for (const filename of Object.keys(files).filter((name) => name.endsWith(".js") && !name.startsWith("vendor/"))) {
+  for (const filename of Object.keys(files).filter((name) =>
+    name.endsWith(".js") && !name.startsWith("vendor/") && !name.startsWith("scaffold/")
+  )) {
     const source = join(sourceRoot, filename);
     const output = join(bundleRoot, filename);
     await mkdir(dirname(output), { recursive: true });
@@ -57,18 +80,25 @@ async function buildBundle(sourceRoot, bundleRoot, files) {
       logLevel: "silent"
     });
   }
-  // Vendor modules are compiler inputs. esbuild folds them into their local
-  // consumers, so retaining them would duplicate code in the final archive.
+  // Vendor and reviewed scaffold modules are compiler inputs. esbuild folds
+  // them into importing application files, so retaining either directory
+  // would leave dead standalone copies in the final extension.
   await rm(join(bundleRoot, "vendor"), { recursive: true, force: true });
+  await rm(join(bundleRoot, "scaffold"), { recursive: true, force: true });
 }
 
 async function createZip(directory) {
   const zip = new JSZip();
+  const files = [];
   for await (const filePath of walkFiles(directory)) {
     const archiveName = relative(directory, filePath).split(sep).join("/");
+    files.push(archiveName);
     zip.file(archiveName, await readFile(filePath));
   }
-  return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE", compressionOptions: { level: 9 } });
+  return {
+    buffer: await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE", compressionOptions: { level: 9 } }),
+    files: files.sort()
+  };
 }
 
 async function* walkFiles(directory) {

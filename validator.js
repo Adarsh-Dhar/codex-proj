@@ -1,5 +1,7 @@
 import { parse } from "@babel/parser";
 import traverseModule from "@babel/traverse";
+import { posix as path } from "node:path";
+import { SCAFFOLD_CATALOG } from "./scaffolder.js";
 
 const traverse = traverseModule.default ?? traverseModule;
 const FORBIDDEN_HOST_PATTERNS = new Set(["<all_urls>", "*://*/*", "http://*/*", "https://*/*", "https://*/"]);
@@ -162,11 +164,206 @@ export function validateExtension(extension) {
   }
 
   const violations = [...validateManifest(manifest), ...validateManifestReferences(manifest, extension.files)];
+  const trustedScaffolds = new Set(extension.trustedScaffolds ?? []);
   for (const [filename, source] of Object.entries(extension.files)) {
+    if (filename.startsWith("scaffold/") && !trustedScaffolds.has(filename)) {
+      violations.push(codeViolation(
+        "scaffold-override-forbidden",
+        `Generated code may not overwrite trusted scaffold module: ${filename}.`,
+        filename,
+        null
+      ));
+    }
     if (filename.endsWith(".js")) violations.push(...validateJavaScript(source, filename));
+    if (filename.endsWith(".html")) violations.push(...validateHtml(source, filename, extension.files));
   }
+  violations.push(...inspectScaffoldUsage(extension).violations);
   violations.push(...validateDnrRules(manifest, extension.files));
   return deduplicateViolations(violations);
+}
+
+/**
+ * Proves that each requested reviewed scaffold is imported and referenced by
+ * generated code before esbuild folds that module into its consumer bundle.
+ */
+export function inspectScaffoldUsage(extension) {
+  if (!extension || typeof extension !== "object" || !extension.files) {
+    throw new TypeError("Generated extension must contain a files object.");
+  }
+  const requestedScaffolds = [...new Set(extension.requestedScaffolds ?? [])].sort();
+  const usage = Object.fromEntries(requestedScaffolds.map((id) => {
+    const scaffold = SCAFFOLD_CATALOG[id];
+    return [id, {
+      module: scaffold ? `scaffold/${scaffold.file}` : null,
+      imports: [],
+      directAccess: []
+    }];
+  }));
+  const violations = [];
+
+  for (const id of requestedScaffolds) {
+    if (!SCAFFOLD_CATALOG[id]) {
+      violations.push(codeViolation(
+        "unknown-scaffold",
+        `Requested scaffold is not in the approved catalog: ${id}.`,
+        "scaffold",
+        null
+      ));
+    }
+  }
+
+  for (const [filename, source] of Object.entries(extension.files)) {
+    if (!filename.endsWith(".js") || filename.startsWith("scaffold/") || typeof source !== "string") continue;
+    let ast;
+    try {
+      ast = parse(source, { sourceType: "unambiguous", plugins: ["jsx", "typescript"] });
+    } catch {
+      // validateJavaScript reports the syntax failure with a source location.
+      continue;
+    }
+
+    traverse(ast, {
+      ImportDeclaration(importPath) {
+        const target = resolveLocalModulePath(filename, importPath.node.source.value);
+        const matched = Object.entries(SCAFFOLD_CATALOG)
+          .find(([, scaffold]) => target === `scaffold/${scaffold.file}`);
+        if (!matched) return;
+        const [id, scaffold] = matched;
+        if (!usage[id]) return;
+
+        const specifiers = importPath.node.specifiers.map((specifier) => {
+          const imported = specifier.type === "ImportSpecifier"
+            ? specifier.imported.name ?? specifier.imported.value
+            : specifier.type;
+          const binding = importPath.scope.getBinding(specifier.local.name);
+          return {
+            filename,
+            imported,
+            local: specifier.local.name,
+            references: binding?.referencePaths.length ?? 0,
+            allowed: specifier.type === "ImportSpecifier" && scaffold.exports.includes(imported)
+          };
+        });
+        usage[id].imports.push({ filename, source: importPath.node.source.value, specifiers });
+      },
+      MemberExpression(memberPath) {
+        if (!usage["web3-evm-provider"]) return;
+        const chain = memberChain(memberPath.node);
+        if (matchesChain(chain, ["globalThis", "ethereum"]) || matchesChain(chain, ["window", "ethereum"]) ||
+          (memberPath.node.object.type === "Identifier" && memberPath.node.object.name === "ethereum")) {
+          usage["web3-evm-provider"].directAccess.push({ filename, rule: "wallet-provider-access" });
+        }
+      },
+      StringLiteral(stringPath) {
+        if (!usage["web3-evm-provider"]) return;
+        if (["eth_requestAccounts", "eth_chainId"].includes(stringPath.node.value)) {
+          usage["web3-evm-provider"].directAccess.push({ filename, rule: "wallet-rpc-method" });
+        }
+      }
+    });
+  }
+
+  for (const id of requestedScaffolds) {
+    const scaffold = SCAFFOLD_CATALOG[id];
+    const report = usage[id];
+    if (!scaffold || !report) continue;
+    const importedBindings = report.imports.flatMap((entry) => entry.specifiers);
+    const validReferences = importedBindings.filter((binding) => binding.allowed && binding.references > 0);
+    const invalidImports = importedBindings.filter((binding) => !binding.allowed);
+    if (invalidImports.length > 0) {
+      violations.push(codeViolation(
+        "scaffold-invalid-import",
+        `${id} may import only its reviewed named exports: ${scaffold.exports.join(", ")}.`,
+        invalidImports[0].filename ?? "unknown.js",
+        null
+      ));
+    }
+    if (validReferences.length === 0) {
+      violations.push(codeViolation(
+        "scaffold-not-used",
+        `${id} was requested but no reviewed scaffold export is imported and referenced by generated code.`,
+        "scaffold",
+        null
+      ));
+    }
+    if (report.directAccess.length > 0) {
+      violations.push(codeViolation(
+        "scaffold-bypass",
+        `${id} must be used instead of duplicating its reviewed wallet-provider logic.`,
+        report.directAccess[0].filename,
+        null
+      ));
+    }
+  }
+
+  return { requestedScaffolds, usage, violations: deduplicateViolations(violations) };
+}
+
+/** Rejects executable inline/remote HTML scripts and verifies local sources. */
+function validateHtml(source, filename, files) {
+  if (typeof source !== "string") {
+    return [codeViolation("html-source", `Expected HTML source for ${filename} to be a string.`, filename, null)];
+  }
+
+  const violations = [];
+  const scriptPattern = /<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi;
+  let match;
+  while ((match = scriptPattern.exec(source)) !== null) {
+    const attributes = match[1];
+    if (isNonExecutableScript(attributes)) continue;
+    const src = readHtmlAttribute(attributes, "src");
+    if (!src) {
+      violations.push(codeViolation(
+        "inline-extension-script",
+        "Extension HTML must load executable JavaScript from a local src file; inline scripts violate MV3 CSP.",
+        filename,
+        null
+      ));
+      continue;
+    }
+    if (isRemoteUrl(src) || src.startsWith("//") || /^[a-z][a-z0-9+.-]*:/i.test(src)) {
+      violations.push(codeViolation(
+        "rce-remote-script-src",
+        "Remote script URLs are forbidden; bundle the script locally.",
+        filename,
+        null
+      ));
+      continue;
+    }
+    const localPath = resolveLocalHtmlPath(filename, src);
+    if (!localPath || !Object.hasOwn(files, localPath)) {
+      violations.push(codeViolation(
+        "missing-html-script",
+        `HTML references missing local script: ${src}.`,
+        filename,
+        null
+      ));
+    }
+  }
+  return violations;
+}
+
+function isNonExecutableScript(attributes) {
+  const type = readHtmlAttribute(attributes, "type")?.trim().toLowerCase();
+  return type === "application/json" || type === "application/ld+json";
+}
+
+function readHtmlAttribute(attributes, name) {
+  const expression = new RegExp(`\\b${name}\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s\"'=<>\`]+))`, "i");
+  const match = expression.exec(attributes);
+  return match?.[1] ?? match?.[2] ?? match?.[3] ?? null;
+}
+
+function resolveLocalHtmlPath(filename, source) {
+  if (source.startsWith("/")) return null;
+  const resolved = path.normalize(path.join(path.dirname(filename), source));
+  return resolved === "." || resolved.startsWith("../") ? null : resolved;
+}
+
+function resolveLocalModulePath(filename, source) {
+  if (typeof source !== "string" || !source.startsWith(".")) return null;
+  const resolved = path.normalize(path.join(path.dirname(filename), source));
+  return resolved === "." || resolved.startsWith("../") ? null : resolved;
 }
 
 /**

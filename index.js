@@ -124,6 +124,32 @@ export async function createManifestFromPrompt(description, options = {}) {
   return generateManifest(description, options);
 }
 
+/** Repairs one reported file, then runs the same deterministic security gate and packager. */
+export async function repairCompiledExtension(description, previousFiles, violation, options = {}) {
+  if (!previousFiles || typeof previousFiles !== "object") throw new TypeError("previousFiles must be a file map.");
+  const original = { description, files: previousFiles, requestedScaffolds: [] };
+  const repaired = await repairExtension(description, original, [{
+    rule: violation?.rule ?? "reported-violation",
+    filename: violation?.file ?? "unknown.js",
+    message: violation?.detail ?? "Repair the reported violation.",
+    loc: null,
+    fixable: true
+  }], options);
+  const mutations = [];
+  let extension = await resolveScaffolds(repaired);
+  extension = applySecurityPipeline(extension, mutations);
+  const violations = [...validateExtension(extension), ...(await lintExtension(extension))];
+  throwIfViolations(violations, mutations);
+  const packaged = await packageExtension(extension, options);
+  return {
+    archivePath: packaged.archivePath,
+    files: packaged.files,
+    mutations,
+    permissionOptimization: extension.permissionOptimization,
+    manifest: JSON.parse(extension.files["manifest.json"])
+  };
+}
+
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
   const args = process.argv.slice(2);
   const runE2E = args.includes("--e2e");

@@ -34,9 +34,22 @@ export async function testExtension(unpackedPath, options = {}) {
     const page = await context.newPage();
     await page.goto(`chrome-extension://${extensionId}/${manifest.action.default_popup}`);
     await page.waitForLoadState("domcontentloaded");
+    let interacted = false;
+    if (options.clickSelector) {
+      // Extensions often have several controls (for example Start and a disabled
+      // Stop button).  Test the first eligible control instead of requiring the
+      // selector to resolve to exactly one element.
+      const target = page.locator(options.clickSelector).first();
+      if (await target.count()) {
+        page.once("dialog", (dialog) => dialog.dismiss());
+        await target.click();
+        await page.waitForTimeout(300);
+        interacted = true;
+      }
+    }
     await mkdir(dirname(screenshotPath), { recursive: true });
     await page.screenshot({ path: screenshotPath });
-    return { status: "passed", extensionId, screenshotPath };
+    return { status: "passed", extensionId, screenshotPath, interacted };
   } catch (error) {
     return { status: "failed", message: error.message };
   } finally {

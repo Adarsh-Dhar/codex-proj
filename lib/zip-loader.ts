@@ -34,7 +34,7 @@ export function getSurfaces(manifest: Record<string, unknown>): Surface[] {
   const chromeUrlOverrides = manifest.chrome_url_overrides as Record<string, unknown> | undefined;
 
   addSurface(surfaces, "popup", "Popup", stringValue(action?.default_popup));
-  addSurface(surfaces, "options", "Options", stringValue(options?.page));
+  addSurface(surfaces, "options", "Options", stringValue(options?.page) ?? stringValue(manifest.options_page));
   addSurface(surfaces, "devtools", "DevTools", stringValue(manifest.devtools_page));
   addSurface(surfaces, "sidepanel", "Side panel", stringValue(sidePanel?.default_path));
   addSurface(surfaces, "newtab", "New tab", stringValue(chromeUrlOverrides?.newtab));

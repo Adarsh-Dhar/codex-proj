@@ -5,6 +5,7 @@ import type { Surface } from "./types";
 
 export async function buildSandboxDocument(
   zip: JSZip,
+  manifest: Record<string, unknown>,
   baseDir: string,
   surface: Surface,
 ): Promise<string> {
@@ -21,12 +22,33 @@ export async function buildSandboxDocument(
   const shim = document.createElement("script");
   shim.textContent = MOCK_SHIM_SOURCE;
   document.head.prepend(shim);
+  await injectBackgroundScript(document, zip, manifest, baseDir, shim);
 
   const baseStyle = document.createElement("style");
   baseStyle.textContent = `:root { color-scheme: light; } body { min-height: 100vh; }`;
   document.head.append(baseStyle);
 
   return `<!DOCTYPE html>\n${document.documentElement.outerHTML}`;
+}
+
+async function injectBackgroundScript(
+  document: Document,
+  zip: JSZip,
+  manifest: Record<string, unknown>,
+  baseDir: string,
+  shim: HTMLScriptElement,
+) {
+  const background = manifest.background as Record<string, unknown> | undefined;
+  const serviceWorker = typeof background?.service_worker === "string" ? background.service_worker : undefined;
+  if (!serviceWorker) return;
+
+  const file = zip.file(resolvePath(baseDir, "", serviceWorker));
+  if (!file) return;
+
+  const backgroundScript = document.createElement("script");
+  if (background?.type === "module") backgroundScript.type = "module";
+  backgroundScript.textContent = await file.async("text");
+  document.head.insertBefore(backgroundScript, shim.nextSibling);
 }
 
 async function inlineStyles(document: Document, zip: JSZip, baseDir: string, fromPath: string) {

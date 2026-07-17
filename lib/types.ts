@@ -17,4 +17,18 @@ export type LoadedExtension = {
   baseDir: string;
   fileName: string;
 };
+
+export type ValidationIssue = {
+  rule: string;
+  file: string;
+  detail: string;
+  severity: "error" | "warning" | "info";
+};
+
+export type ValidationReport = {
+  violations: ValidationIssue[];
+  repairs: Array<{ file: string; detail: string }>;
+};
+
+export type PermissionAudit = Array<{ permission: string; justified: boolean }>;
 import type JSZip from "jszip";

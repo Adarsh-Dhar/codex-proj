@@ -1,13 +1,17 @@
+import type { PermissionAudit } from "@/lib/types";
+
 type ManifestPanelProps = {
   manifest: Record<string, unknown>;
   fileName: string;
+  permissionAudit?: PermissionAudit;
+  onDownload?: () => void;
 };
 
 function string(value: unknown, fallback = "—") {
   return typeof value === "string" && value ? value : fallback;
 }
 
-export default function ManifestPanel({ manifest, fileName }: ManifestPanelProps) {
+export default function ManifestPanel({ manifest, fileName, permissionAudit = [], onDownload }: ManifestPanelProps) {
   const permissions = Array.isArray(manifest.permissions)
     ? manifest.permissions.filter((permission): permission is string => typeof permission === "string")
     : [];
@@ -28,11 +32,15 @@ export default function ManifestPanel({ manifest, fileName }: ManifestPanelProps
         <span>Permissions</span>
         {permissions.length ? (
           <div className="permission-tags">
-            {permissions.slice(0, 4).map((permission) => <code key={permission}>{permission}</code>)}
+            {permissions.slice(0, 4).map((permission) => {
+              const audit = permissionAudit.find((entry) => entry.permission === permission);
+              return <code key={permission} title={audit?.justified === false ? "Unused in this preview session" : undefined}>{permission}{audit?.justified === false ? " ⚠" : ""}</code>;
+            })}
             {permissions.length > 4 && <code>+{permissions.length - 4}</code>}
           </div>
         ) : <em>None declared</em>}
       </div>
+      {onDownload ? <button className="download-button" type="button" onClick={onDownload}>↓ Download ZIP</button> : null}
     </section>
   );
 }

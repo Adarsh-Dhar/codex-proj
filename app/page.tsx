@@ -8,6 +8,7 @@ import IframeStage from "@/components/sandbox/iframe-stage";
 import ManifestPanel from "@/components/sandbox/manifest-panel";
 import ModeToggle from "@/components/sandbox/mode-toggle";
 import PermissionCostPanel from "@/components/sandbox/permission-cost-panel";
+import PipelinePanel from "@/components/sandbox/pipeline-panel";
 import PromptBar from "@/components/sandbox/prompt-bar";
 import RealRunStage from "@/components/sandbox/real-run-stage";
 import SurfaceTabs from "@/components/sandbox/surface-tabs";
@@ -39,7 +40,7 @@ export default function SandboxPage() {
   const [generatedFiles, setGeneratedFiles] = useState<Record<string, string> | null>(null);
   const [validationReport, setValidationReport] = useState<ValidationReport | null>(null);
   const [lastPrompt, setLastPrompt] = useState("");
-  const [mode, setMode] = useState<"mock" | "real">("mock");
+  const [mode, setMode] = useState<"mock" | "real" | "pipeline">("mock");
   const [realRunning, setRealRunning] = useState(false);
   const [realStatusLog, setRealStatusLog] = useState<string[]>([]);
   const [realScreenshot, setRealScreenshot] = useState("");
@@ -197,9 +198,11 @@ export default function SandboxPage() {
     <section className="workspace">
       <header className="workspace-header"><div><span className="eyebrow">Chrome extension inspector</span><h1>Run a safe, visual check.</h1></div><span className="secure-label">◈ Isolated</span></header>
       <ModeToggle mode={mode} onChange={setMode} canRunReal={canRunReal} realRunning={realRunning} />
-      <div className="workspace-content">
-        {mode === "mock" ? <IframeStage srcDoc={srcDoc} activeLabel={activeSurface?.label} loading={busy && Boolean(extension)} /> : <RealRunStage running={realRunning} statusLog={realStatusLog} screenshotDataUrl={realScreenshot} errorMessage={realError} onRun={runReal} canRun={canRunReal} />}
-        <ActivityLog entries={log} />
+      <div className={`workspace-content${mode === "pipeline" ? " workspace-content--pipeline" : ""}`}>
+        {mode === "pipeline" ? <PipelinePanel generating={generating} generationLog={generationLog} lastPrompt={lastPrompt} validationReport={validationReport} generatedFiles={generatedFiles} zipBase64={zipBase64} activeSurface={activeSurface} mockBusy={busy && Boolean(extension)} activity={log} realRunning={realRunning} realStatusLog={realStatusLog} realScreenshot={realScreenshot} realError={realError} /> : <>
+          {mode === "mock" ? <IframeStage srcDoc={srcDoc} activeLabel={activeSurface?.label} loading={busy && Boolean(extension)} /> : <RealRunStage running={realRunning} statusLog={realStatusLog} screenshotDataUrl={realScreenshot} errorMessage={realError} onRun={runReal} canRun={canRunReal} />}
+          <ActivityLog entries={log} />
+        </>}
       </div>
     </section>
   </main>;

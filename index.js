@@ -15,26 +15,34 @@ export async function compileExtension(description, options = {}) {
     throw new TypeError("A non-empty extension description is required.");
   }
 
+  reportStage(options, "Generating extension files");
   const generated = await generateExtension(description, options);
+  reportStage(options, "Resolving approved scaffolds");
   let extension = await resolveScaffolds(generated);
   const mutations = [];
+  reportStage(options, "Applying security checks and permission downscoping");
   extension = applySecurityPipeline(extension, mutations);
 
+  reportStage(options, "Linting extension code");
   const initialLintViolations = await lintExtension(extension);
   let lintRepair = { attempted: false, violations: 0 };
   if (initialLintViolations.length > 0) {
+    reportStage(options, "Repairing lint findings");
     const repaired = await repairExtension(description, extension, initialLintViolations, options);
     const merged = mergeRepairedExtension(extension, repaired);
     extension = await resolveScaffolds(merged, extension.requestedScaffolds);
     extension = applySecurityPipeline(extension, mutations);
+    reportStage(options, "Rechecking repaired code");
     const remainingLintViolations = await lintExtension(extension);
     throwIfViolations(remainingLintViolations, mutations);
     lintRepair = { attempted: true, violations: initialLintViolations.length };
   }
 
+  reportStage(options, "Vendoring approved dependencies");
   const dependencies = collectExternalDependencies(extension);
   const ingested = await ingestDependencies(extension, dependencies, options);
   extension = rewriteExternalImports(ingested, ingested.vendorMap);
+  reportStage(options, "Validating the final extension");
   const finalViolations = validateExtension(extension);
   const unresolvedDependencies = collectExternalDependencies(extension);
   if (unresolvedDependencies.length > 0) {
@@ -51,6 +59,7 @@ export async function compileExtension(description, options = {}) {
   throwIfViolations(await lintExtension(extension), mutations);
   const scaffoldUsage = inspectScaffoldUsage(extension);
 
+  reportStage(options, "Bundling extension ZIP");
   const packaged = await packageExtension(extension, {
     ...options,
     keepUnpacked: options.keepUnpacked || options.runE2E
@@ -128,6 +137,7 @@ export async function createManifestFromPrompt(description, options = {}) {
 export async function repairCompiledExtension(description, previousFiles, violation, options = {}) {
   if (!previousFiles || typeof previousFiles !== "object") throw new TypeError("previousFiles must be a file map.");
   const original = { description, files: previousFiles, requestedScaffolds: [] };
+  reportStage(options, "Preparing targeted repair");
   const repaired = await repairExtension(description, original, [{
     rule: violation?.rule ?? "reported-violation",
     filename: violation?.file ?? "unknown.js",
@@ -136,10 +146,14 @@ export async function repairCompiledExtension(description, previousFiles, violat
     fixable: true
   }], options);
   const mutations = [];
+  reportStage(options, "Resolving approved scaffolds");
   let extension = await resolveScaffolds(repaired);
+  reportStage(options, "Applying security checks and permission downscoping");
   extension = applySecurityPipeline(extension, mutations);
+  reportStage(options, "Linting and validating repaired code");
   const violations = [...validateExtension(extension), ...(await lintExtension(extension))];
   throwIfViolations(violations, mutations);
+  reportStage(options, "Bundling repaired extension ZIP");
   const packaged = await packageExtension(extension, options);
   return {
     archivePath: packaged.archivePath,
@@ -148,6 +162,10 @@ export async function repairCompiledExtension(description, previousFiles, violat
     permissionOptimization: extension.permissionOptimization,
     manifest: JSON.parse(extension.files["manifest.json"])
   };
+}
+
+function reportStage(options, label) {
+  if (typeof options.onStage === "function") options.onStage(label);
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {

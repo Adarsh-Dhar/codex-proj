@@ -35,6 +35,7 @@ export default function SandboxPage() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [generationLog, setGenerationLog] = useState<string[]>([]);
   const [rawFile, setRawFile] = useState<File | null>(null);
   const [zipBase64, setZipBase64] = useState("");
   const [generatedFiles, setGeneratedFiles] = useState<Record<string, string> | null>(null);
@@ -113,13 +114,9 @@ export default function SandboxPage() {
   const handleGenerate = useCallback(async (prompt: string) => {
     setGenerating(true);
     setError("");
+    setGenerationLog(["Connecting to the extension compiler"]);
     try {
-      const response = await fetch("/api/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt }) });
-      const data = await response.json();
-      if (!response.ok) {
-        setValidationReport(data.validationReport ?? null);
-        throw new Error(data.error ?? "Generation failed.");
-      }
+      const data = await runGenerateStream({ prompt }, setGenerationLog, setValidationReport);
       await applyGeneratedResponse(data, prompt);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Generation failed.");
@@ -135,13 +132,9 @@ export default function SandboxPage() {
     }
     setGenerating(true);
     setError("");
+    setGenerationLog(["Connecting to the repair compiler"]);
     try {
-      const response = await fetch("/api/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: lastPrompt, repairViolation: violation, previousFiles: generatedFiles }) });
-      const data = await response.json();
-      if (!response.ok) {
-        setValidationReport(data.validationReport ?? null);
-        throw new Error(data.error ?? "Repair failed.");
-      }
+      const data = await runGenerateStream({ prompt: lastPrompt, repairViolation: violation, previousFiles: generatedFiles }, setGenerationLog, setValidationReport);
       await applyGeneratedResponse(data, lastPrompt);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Repair failed.");
@@ -201,7 +194,7 @@ export default function SandboxPage() {
   return <main className="app-shell">
     <aside className="sidebar">
       <header className="brand"><span className="brand-mark">⬡</span><div><span>EXTENSION</span><strong>Sandbox</strong></div></header>
-      <PromptBar onGenerate={handleGenerate} generating={generating} />
+      <PromptBar onGenerate={handleGenerate} generating={generating} statusLog={generationLog} />
       <div className="sidebar-divider"><span>or inspect a ZIP</span></div>
       <DropZone onFile={handleZipFile} busy={(busy && !extension) || generating} />
       {error ? <div className="error-banner" role="alert">{error}</div> : null}
@@ -224,4 +217,47 @@ export default function SandboxPage() {
 function base64ToBytes(value: string) {
   const binary = window.atob(value);
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+
+async function runGenerateStream(
+  body: Record<string, unknown>,
+  setStatusLog: (update: (entries: string[]) => string[]) => void,
+  setReport: (report: ValidationReport | null) => void
+): Promise<GenerateResponse> {
+  const response = await fetch("/api/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  if (!response.body) throw new Error("The compiler did not return a response stream.");
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let remaining = "";
+  let result: GenerateResponse | null = null;
+
+  const consume = (line: string) => {
+    if (!line.trim()) return;
+    const event = JSON.parse(line) as { type?: string; label?: string; error?: string; validationReport?: ValidationReport } & Partial<GenerateResponse>;
+    if (event.type === "stage" && event.label) {
+      setStatusLog((entries) => entries.includes(event.label!) ? entries : [...entries, event.label!]);
+    } else if (event.type === "done") {
+      result = event as GenerateResponse;
+    } else if (event.type === "error") {
+      setReport(event.validationReport ?? null);
+      throw new Error(event.error ?? "Generation failed.");
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    remaining += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+    const lines = remaining.split("\n");
+    remaining = lines.pop() ?? "";
+    lines.forEach(consume);
+    if (done) break;
+  }
+  if (remaining.trim()) consume(remaining);
+  if (!result) throw new Error("The compiler finished without a result.");
+  return result;
 }

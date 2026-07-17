@@ -26,6 +26,8 @@ button:disabled { cursor:not-allowed; }
 .prompt-bar input:focus { border-color:#89b83e; box-shadow:0 0 0 3px #ecf7d8; }
 .prompt-bar button, .download-button, .real-stage button, .validation-issue button { background:var(--ink); border:0; border-radius:8px; color:#fff; font-size:10px; font-weight:800; padding:9px 10px; }
 .prompt-bar button:disabled, .real-stage button:disabled, .validation-issue button:disabled { opacity:.45; }
+.prompt-terminal { background:#17221e; border-radius:8px; color:#c3eb76; display:grid; font-family:"DM Mono", monospace; font-size:9px; gap:5px; line-height:1.4; max-height:120px; overflow:auto; padding:9px 10px; }
+.prompt-terminal p { margin:0; }
 .sidebar-divider { align-items:center; display:flex; gap:9px; }
 .sidebar-divider:before, .sidebar-divider:after { background:var(--line); content:""; flex:1; height:1px; }
 .visually-hidden { height:1px; margin:-1px; overflow:hidden; position:absolute; width:1px; clip:rect(0 0 0 0); }

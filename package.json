@@ -9,6 +9,9 @@
   },
   "scripts": {
     "start": "node --env-file=.env chatbot.js",
+    "dev": "next dev --hostname 127.0.0.1 --port 3001",
+    "build": "next build",
+    "serve": "next start --hostname 127.0.0.1 --port 3001",
     "compile": "node --env-file=.env index.js",
     "manifest": "node --env-file=.env index.js",
     "lint": "node --check index.js && node --check chatbot.js && node --check ai-orchestrator.js && node --check validator.js && node --check permission-optimizer.js && node --check linter.js && node --check scaffolder.js && node --check e2e-tester.js && node --check mutator.js && node --check vendor-ingestor.js && node --check packager.js"
@@ -20,7 +23,16 @@
     "esbuild": "^0.25.0",
     "eslint": "^9.39.0",
     "jszip": "^3.10.1",
+    "next": "^16.1.0",
     "openai": "^5.0.0",
-    "playwright": "^1.57.0"
+    "playwright": "^1.57.0",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "typescript": "^5.9.3"
   }
 }

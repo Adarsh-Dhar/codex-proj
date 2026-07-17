@@ -8,6 +8,7 @@ import { chromium } from "playwright";
  * launch is reported to the caller and never weakens the compiler security gate.
  */
 export async function testExtension(unpackedPath, options = {}) {
+  const onStage = typeof options.onStage === "function" ? options.onStage : () => {};
   const manifest = JSON.parse(await readFile(join(unpackedPath, "manifest.json"), "utf8"));
   if (!manifest.background?.service_worker) {
     return { status: "skipped", reason: "No service worker is available to resolve the extension ID." };
@@ -16,10 +17,12 @@ export async function testExtension(unpackedPath, options = {}) {
     return { status: "skipped", reason: "No action popup is declared for browser smoke testing." };
   }
 
+  onStage("Creating a temporary Chromium profile");
   const userDataDir = await mkdtemp(join(tmpdir(), "mv3-e2e-profile-"));
   const screenshotPath = resolve(options.screenshotPath ?? "dist/extension-preview.png");
   let context;
   try {
+    onStage("Launching isolated Chromium");
     context = await chromium.launchPersistentContext(userDataDir, {
       channel: "chromium",
       headless: true,
@@ -28,9 +31,11 @@ export async function testExtension(unpackedPath, options = {}) {
         `--load-extension=${unpackedPath}`
       ]
     });
+    onStage("Waiting for the extension service worker");
     let worker = context.serviceWorkers()[0];
     if (!worker) worker = await context.waitForEvent("serviceworker", { timeout: 10_000 });
     const extensionId = new URL(worker.url()).host;
+    onStage("Opening the extension popup");
     const page = await context.newPage();
     await page.goto(`chrome-extension://${extensionId}/${manifest.action.default_popup}`);
     await page.waitForLoadState("domcontentloaded");
@@ -41,12 +46,14 @@ export async function testExtension(unpackedPath, options = {}) {
       // selector to resolve to exactly one element.
       const target = page.locator(options.clickSelector).first();
       if (await target.count()) {
+        onStage("Clicking the extension's primary control");
         page.once("dialog", (dialog) => dialog.dismiss());
         await target.click();
         await page.waitForTimeout(300);
         interacted = true;
       }
     }
+    onStage("Capturing the popup screenshot");
     await mkdir(dirname(screenshotPath), { recursive: true });
     await page.screenshot({ path: screenshotPath });
     return { status: "passed", extensionId, screenshotPath, interacted };

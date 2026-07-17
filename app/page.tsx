@@ -17,8 +17,6 @@ import { auditPermissions } from "@/lib/permission-audit";
 import type { LogEntry, LoadedExtension, Surface, ValidationIssue, ValidationReport } from "@/lib/types";
 import { getSurfaces, loadZip } from "@/lib/zip-loader";
 
-const REAL_RUN_STATUS_STEPS = ["Unpacking extension ZIP", "Starting isolated Chromium", "Loading the extension", "Capturing popup screenshot"];
-
 type GenerateResponse = {
   manifest: Record<string, unknown>;
   files: Record<string, string>;
@@ -148,24 +146,17 @@ export default function SandboxPage() {
     setRealRunning(true);
     setRealError("");
     setRealScreenshot("");
-    setRealStatusLog([REAL_RUN_STATUS_STEPS[0], ...(action === "click-primary" ? ["Clicking the extension's primary button"] : [])]);
-    let index = 1;
-    const timer = window.setInterval(() => {
-      if (index >= REAL_RUN_STATUS_STEPS.length) return;
-      setRealStatusLog((entries) => [...entries, REAL_RUN_STATUS_STEPS[index++]]);
-    }, 900);
+    setRealStatusLog([]);
     try {
       const formData = new FormData();
       formData.append("file", rawFile);
       formData.append("action", action);
       const response = await fetch("/api/real-run", { method: "POST", body: formData });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error ?? "The real browser run failed.");
-      setRealScreenshot(data.screenshotDataUrl);
+      const screenshot = await readRealRunStream(response, setRealStatusLog);
+      setRealScreenshot(screenshot);
     } catch (caught) {
       setRealError(caught instanceof Error ? caught.message : "The real browser run failed.");
     } finally {
-      window.clearInterval(timer);
       setRealRunning(false);
     }
   }, [rawFile]);
@@ -212,6 +203,39 @@ export default function SandboxPage() {
       </div>
     </section>
   </main>;
+}
+
+async function readRealRunStream(
+  response: Response,
+  setStatusLog: (update: (entries: string[]) => string[]) => void
+): Promise<string> {
+  if (!response.body) throw new Error("The real browser run did not return a response stream.");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let remaining = "";
+  let screenshot = "";
+  const consume = (line: string) => {
+    if (!line.trim()) return;
+    const event = JSON.parse(line) as { type?: string; label?: string; error?: string; screenshotDataUrl?: string };
+    if (event.type === "stage" && event.label) {
+      setStatusLog((entries) => entries.includes(event.label!) ? entries : [...entries, event.label!]);
+    } else if (event.type === "done" && event.screenshotDataUrl) {
+      screenshot = event.screenshotDataUrl;
+    } else if (event.type === "error") {
+      throw new Error(event.error ?? "The real browser run failed.");
+    }
+  };
+  while (true) {
+    const { done, value } = await reader.read();
+    remaining += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+    const lines = remaining.split("\n");
+    remaining = lines.pop() ?? "";
+    lines.forEach(consume);
+    if (done) break;
+  }
+  if (remaining.trim()) consume(remaining);
+  if (!screenshot) throw new Error("The real browser run finished without a screenshot.");
+  return screenshot;
 }
 
 function base64ToBytes(value: string) {
